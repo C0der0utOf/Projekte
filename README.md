@@ -1,1 +1,2 @@
-# projects von Nik. dieses github repo ist eine ansammlung von meinen Projekten
+# projekte 
+Dieses github repo ist eine ansammlung von meinen Projekten
